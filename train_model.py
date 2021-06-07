@@ -13,7 +13,11 @@ import datasets
 import made
 import transformer
 
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+torch.cuda.empty_cache()
+# DEVICE = 'cuda:2' if torch.cuda.is_available() else 'cpu'
+# DEVICE = 'cpu'
+torch.cuda.set_device(3)
+DEVICE = 'cuda:4'
 print('Device', DEVICE)
 
 parser = argparse.ArgumentParser()
@@ -331,11 +335,17 @@ def TrainTask(seed=0):
     torch.manual_seed(0)
     np.random.seed(0)
 
-    assert args.dataset in ['dmv-tiny', 'dmv']
+    assert args.dataset in ['dmv-tiny', 'dmv', 'cover','dmvmy','tpch']
     if args.dataset == 'dmv-tiny':
         table = datasets.LoadDmv('dmv-tiny.csv')
     elif args.dataset == 'dmv':
         table = datasets.LoadDmv()
+    elif args.dataset == 'cover':
+        table = datasets.LoadCover()
+    elif args.dataset == 'dmvmy':
+        table = datasets.LoadDmvMy()
+    elif args.dataset == 'tpch':
+        table = datasets.LoadTpcH(sampling=0.2)
 
     table_bits = Entropy(
         table,
@@ -356,7 +366,7 @@ def TrainTask(seed=0):
                                 fixed_ordering=fixed_ordering,
                                 seed=seed)
     else:
-        if args.dataset in ['dmv-tiny', 'dmv']:
+        if args.dataset in ['dmv-tiny', 'dmv', 'cover','dmvmy','tpch']:
             model = MakeMade(
                 scale=args.fc_hiddens,
                 cols_to_train=table.columns,

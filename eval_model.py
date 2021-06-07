@@ -6,7 +6,7 @@ import os
 import pickle
 import re
 import time
-
+import datetime
 import numpy as np
 import pandas as pd
 import torch
@@ -128,10 +128,18 @@ parser.add_argument('--bn-root',
                     help='Root variable index for chow liu tree.')
 # Maxdiff
 parser.add_argument(
-    '--maxdiff-limit',
-    type=int,
-    default=30000,
-    help='Maximum number of partitions of the Maxdiff histogram.')
+                    '--maxdiff-limit',
+                    type=int,
+                    default=30000,
+                    help='Maximum number of partitions of the Maxdiff histogram.')
+
+parser.add_argument('--query-path',type=str,
+                    # default="./datasets/*.npy",
+                    help='query file path for dataset')
+
+parser.add_argument('--num-filters',type=int,
+                    default=10,
+                    help="number of columns for filtering")
 
 args = parser.parse_args()
 
@@ -150,11 +158,17 @@ def InvertOrder(order):
 
 
 def MakeTable():
-    assert args.dataset in ['dmv-tiny', 'dmv']
+    assert args.dataset in ['dmv-tiny', 'dmv', 'cover','dmvmy','tpch']
     if args.dataset == 'dmv-tiny':
         table = datasets.LoadDmv('dmv-tiny.csv')
     elif args.dataset == 'dmv':
         table = datasets.LoadDmv()
+    elif args.dataset == 'cover':
+        table = datasets.LoadCover()
+    elif args.dataset =='dmvmy':
+        table = datasets.LoadDmvMy()
+    elif args.dataset == 'tpch':
+        table = datasets.LoadTpcH(sampling=0.2)
 
     oracle_est = estimators_lib.Oracle(table)
     if args.run_bn:
@@ -217,6 +231,73 @@ def GenerateQuery(all_cols, rng, table, return_col_idx=False):
     return cols, ops, vals
 
 
+class TPCH_queries():
+    def __init__(self,file_path,all_cols,num_filters,return_col_idx=False):
+        self.file_path = file_path
+        self.queries = np.load(file_path)
+        self.cnt = 0
+        self.all_cols = all_cols
+        self.return_col_idx = return_col_idx
+        self.num_filters = num_filters
+        # print(np.shape(self.queries))
+        # print(self.queries)
+    
+    def GetOneQuery(self):
+        ops = [">=","<="] * (self.num_filters - 1)
+        ops .append("=")
+        vals = self.queries[self.cnt]
+        cols = [col for col in self.all_cols for _ in (0, 1)]
+        cols.pop(-1)
+        self.cnt += 1
+        if self.return_col_idx:
+            return 
+        else:
+            return cols,ops,vals
+
+class DMV_queries():
+    def __init__(self,file_path,all_cols,num_filters,return_col_idx=False):
+        self.file_path = file_path
+        self.queries = np.load(file_path)
+        self.cnt = 0
+        self.all_cols = all_cols
+        self.return_col_idx = return_col_idx
+        self.num_filters = num_filters
+        # print(np.shape(self.queries))
+        # print(self.queries)
+    
+    def GetOneQuery(self):
+        ops = [">=","<="] * self.num_filters
+        vals = self.queries[self.cnt]
+        cols = [col for col in self.all_cols for _ in (0, 1)]
+        self.cnt += 1
+        if self.return_col_idx:
+            return 
+        else:
+            return cols,ops,vals
+
+class Cover_queries():
+    def __init__(self,file_path,all_cols,num_filters,return_col_idx=False):
+        self.file_path = file_path
+        self.queries = np.load(file_path)
+        self.cnt = 0
+        self.all_cols = all_cols
+        self.return_col_idx = return_col_idx
+        self.num_filters = num_filters
+        # print(np.shape(self.queries))
+        # print(self.queries)
+    
+    def GetOneQuery(self):
+        
+        ops = [">=","<="] * self.num_filters
+        vals = self.queries[self.cnt]
+        cols = [col for col in self.all_cols for _ in (0, 1)]
+        self.cnt += 1
+        if self.return_col_idx:
+            return 
+        else:
+            return cols,ops,vals
+
+
 def Query(estimators,
           do_print=True,
           oracle_card=None,
@@ -235,9 +316,76 @@ def Query(estimators,
     # Actual.
     card = oracle_est.Query(cols, ops,
                             vals) if oracle_card is None else oracle_card
+    print("true card", card)
     if card == 0:
         return
 
+    pprint('Q(', end='')
+    for c, o, v in zip(cols, ops, vals):
+        pprint('{} {} {}, '.format(c.name, o, str(v)), end='')
+    pprint('): ', end='')
+
+    pprint('\n  actual {} ({:.3f}%) '.format(card,
+                                             card / table.cardinality * 100),
+           end='')
+
+    for est in estimators:
+        est_card = est.Query(cols, ops, vals)
+        err = ErrorMetric(est_card, card)
+        est.AddError(err, est_card, card)
+        pprint('{} {} (err={:.3f}) '.format(str(est), est_card, err), end='')
+    pprint()
+
+def CoverQuery(estimators,
+          do_print=True,
+          oracle_card=None,
+          query=None,
+          table=None,
+          oracle_est=None):
+    assert query is not None
+    cols, ops, vals = query
+    def pprint(*args, **kwargs):
+        if do_print:
+            print(*args, **kwargs)
+
+    # Actual.
+    card = oracle_est.Query(cols, ops,
+                            vals) if oracle_card is None else oracle_card
+    if card == 0:
+        return
+    pprint('Q(', end='')
+    for c, o, v in zip(cols, ops, vals):
+        pprint('{} {} {}, '.format(c.name, o, str(v)), end='')
+    pprint('): ', end='')
+
+    pprint('\n  actual {} ({:.3f}%) '.format(card,
+                                             card / table.cardinality * 100),
+           end='')
+
+    for est in estimators:
+        est_card = est.Query(cols, ops, vals)
+        err = ErrorMetric(est_card, card)
+        est.AddError(err, est_card, card)
+        pprint('{} {} (err={:.3f}) '.format(str(est), est_card, err), end='')
+    pprint()
+
+def MyDmvQuery(estimators,
+          do_print=True,
+          oracle_card=None,
+          query=None,
+          table=None,
+          oracle_est=None):
+    assert query is not None
+    cols, ops, vals = query
+    def pprint(*args, **kwargs):
+        if do_print:
+            print(*args, **kwargs)
+
+    # Actual.
+    card = oracle_est.Query(cols, ops,
+                            vals) if oracle_card is None else oracle_card
+    if card == 0:
+        return
     pprint('Q(', end='')
     for c, o, v in zip(cols, ops, vals):
         pprint('{} {} {}, '.format(c.name, o, str(v)), end='')
@@ -271,32 +419,52 @@ def RunN(table,
          rng=None,
          num=20,
          log_every=50,
-         num_filters=11,
+         num_filters=10,
          oracle_cards=None,
-         oracle_est=None):
+         oracle_est=None,
+         dataset=None,
+         query_path=None):
     if rng is None:
         rng = np.random.RandomState(1234)
-
+    if(dataset=='cover'):
+        queries = Cover_queries(query_path,cols,num_filters=num_filters)
+    elif(dataset=='dmvmy'):
+        queries = DMV_queries(query_path,cols,num_filters=num_filters)
+    elif(dataset=='tpch'):
+        queries = TPCH_queries(query_path,cols,num_filters=num_filters)
     last_time = None
+    test_starttime = datetime.datetime.now()
     for i in range(num):
         do_print = False
-        if i % log_every == 0:
-            if last_time is not None:
-                print('{:.1f} queries/sec'.format(log_every /
-                                                  (time.time() - last_time)))
-            do_print = True
-            print('Query {}:'.format(i), end=' ')
-            last_time = time.time()
-        query = GenerateQuery(cols, rng, table)
+        # if i % log_every == 0:
+        #     if last_time is not None:
+        #         print('{:.1f} queries/sec'.format(log_every /
+        #                                           (time.time() - last_time)))
+        #     do_print = True
+        #     print('Query {}:'.format(i), end=' ')
+        #     last_time = time.time()
+        # if(dataset=='cover'):
+        #     query = queries.GetOneQuery()
+        #     # CoverQuery(estimators,query=query)
+        # elif(dataset=='dmvmy'):
+        #     query = queries.GetOneQuery()
+        # elif(dataset=='tpch'):
+        #     query = queries.GetOneQuery()
+        #     # MyDmvQuery()
+        # else:
+        #     query = GenerateQuery(cols, rng, table, num_filters)
+        # print("query: ",query)
+        query = queries.GetOneQuery()
         Query(estimators,
-              do_print,
-              oracle_card=oracle_cards[i]
-              if oracle_cards is not None and i < len(oracle_cards) else None,
-              query=query,
-              table=table,
-              oracle_est=oracle_est)
-
-        max_err = ReportEsts(estimators)
+            do_print,
+            oracle_card=oracle_cards[i]
+            if oracle_cards is not None and i < len(oracle_cards) else None,
+            query=query,
+            table=table,
+            oracle_est=oracle_est)
+    test_endtime = datetime.datetime.now()
+    print("test time: ",(test_endtime - test_starttime).total_seconds() * 1000)
+        # max_err = ReportEsts(estimators)
     return False
 
 
@@ -353,7 +521,7 @@ def RunNParallel(estimator_factory,
                                             table=table,
                                             return_col_idx=True)
         queries.append((col_idxs, ops, vals))
-
+    # print("queries: ",queries)
     cnts = 0
     for i in range(num):
         query = queries[i]
@@ -466,7 +634,8 @@ def SaveEstimators(path, estimators, return_df=False):
 
 def LoadOracleCardinalities():
     ORACLE_CARD_FILES = {
-        'dmv': 'datasets/dmv-2000queries-oracle-cards-seed1234.csv'
+        'dmv': 'datasets/dmv-2000queries-oracle-cards-seed1234.csv',
+        'cover': 'datasets/cover-5000queries'
     }
     path = ORACLE_CARD_FILES.get(args.dataset, None)
     if path and os.path.exists(path):
@@ -516,7 +685,7 @@ def Main():
                                     fixed_ordering=order,
                                     seed=seed)
         else:
-            if args.dataset in ['dmv-tiny', 'dmv']:
+            if args.dataset in ['dmv-tiny', 'dmv', 'cover','dmvmy','tpch']:
                 model = MakeMade(
                     scale=args.fc_hiddens,
                     cols_to_train=table.columns,
@@ -529,7 +698,8 @@ def Main():
         assert order is None or len(order) == model.nin, order
         ReportModel(model)
         print('Loading ckpt:', s)
-        model.load_state_dict(torch.load(s))
+        model.load_state_dict(torch.load(s,map_location='cpu'))
+        print(sum(p.numel() for p in model.parameters() if p.requires_grad))
         model.eval()
 
         print(s, bits_gap, seed)
@@ -590,12 +760,14 @@ def Main():
             RunN(table,
                  cols_to_train,
                  estimators,
+                 query_path=args.query_path,
                  rng=np.random.RandomState(1234),
                  num=args.num_queries,
                  log_every=1,
-                 num_filters=None,
+                 num_filters=args.num_filters,
                  oracle_cards=oracle_cards,
-                 oracle_est=oracle_est)
+                 oracle_est=oracle_est,
+                 dataset=args.dataset)
 
     SaveEstimators(args.err_csv, estimators)
     print('...Done, result:', args.err_csv)
